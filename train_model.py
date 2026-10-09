@@ -2,9 +2,11 @@
 train_model.py
 ==============
 
-Train and evaluate any built-in RecBole sequential model on a clean or noisy
-dataset with RecBole's ``run_recbole`` quick-start API, then append the result
-to ``results/results.csv`` (see ``log_results.py``).
+Train and evaluate a RecBole sequential model on a clean or noisy dataset, then
+append the result to ``results/results.csv`` (see ``log_results.py``).
+Built-in models run through RecBole's ``run_recbole`` quick-start API; models
+implemented in this project (``CUSTOM_MODELS``: FMLPRec, Sig4Rec) go through
+``run_custom``, which performs the same steps.
 
 All models share the same data processing, leave-one-out split, full-ranking
 evaluation and embedding size, so differences between runs come from the model
@@ -16,12 +18,15 @@ Usage
     python train_model.py --model SASRec --dataset ml-1m-ins20 --seed 2027
     python train_model.py --model GRU4Rec --dataset ml-1m-del10
     python train_model.py --model BERT4Rec --dataset ml-1m --epochs 300
+    python train_model.py --model FMLPRec --dataset ml-1m-ins30
+    python train_model.py --model Sig4Rec --dataset ml-1m-del20   # BPR loss by default
 
 Noisy datasets (e.g. ``ml-1m-ins20``) must first be created with
 ``python inject_noise.py``. Clean ``ml-1m`` is downloaded automatically.
 """
 
 import argparse
+import importlib
 import os
 from logging import FileHandler, getLogger
 
@@ -30,12 +35,27 @@ from logging import FileHandler, getLogger
 os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
 import torch
+from recbole.config import Config
+from recbole.data import create_dataset, data_preparation
 from recbole.quick_start import run_recbole
+from recbole.trainer import Trainer
+from recbole.utils import init_logger, init_seed, set_color
 
-from log_results import DEFAULT_CSV, log_result, parse_recbole_log
+from log_results import DEFAULT_CSV, log_result, parse_dataset_name, parse_recbole_log
 
 METRICS = ["NDCG", "Recall", "Hit"]
 TOPK = [10, 20]
+
+# Models implemented in this project: (module, class name, defaults dict name).
+# run_recbole only knows RecBole's built-in models, so these use run_custom().
+# Modules are imported only when their model is requested (load_custom_model).
+CUSTOM_MODELS = {
+    "FMLPRec": ("fmlp_rec", "FMLPRec", "FMLPREC_DEFAULTS"),
+    "Sig4Rec": ("sig4rec", "Sig4Rec", "SIG4REC_DEFAULTS"),
+}
+# One negative item per positive, as required by the BPR loss.
+BPR_NEG_SAMPLING = {"distribution": "uniform", "sample_num": 1, "alpha": 1.0,
+                    "dynamic": False, "candidate_num": 0}
 
 
 # --------------------------------------------------------------------------- #
@@ -46,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         description="Train a RecBole sequential model and log its test metrics."
     )
     parser.add_argument("--model", default="SASRec",
-                        help="RecBole model name, e.g. SASRec, BERT4Rec, GRU4Rec.")
+                        help="RecBole model name (SASRec, BERT4Rec, GRU4Rec, ...), FMLPRec or Sig4Rec.")
     parser.add_argument("--dataset", default="ml-1m",
                         help="Dataset folder under --data_path, e.g. ml-1m or ml-1m-ins20.")
     parser.add_argument("--seed", type=int, default=2026)
@@ -57,6 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding_size", type=int, default=64,
                         help="Item embedding / hidden dimension, applied to every model.")
     parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--loss_type", choices=["CE", "BPR"], default=None,
+                        help="Override the model's default loss (CE for most models, BPR for Sig4Rec).")
     parser.add_argument("--stopping_step", type=int, default=10,
                         help="Early-stopping patience in epochs (validation NDCG@10).")
     parser.add_argument("--gpu_id", default="0")
@@ -65,12 +87,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def load_custom_model(name: str) -> tuple:
+    """Import a project model's module and return (model class, default hyperparameters)."""
+    module_name, class_name, defaults_name = CUSTOM_MODELS[name]
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name), getattr(module, defaults_name)
+
+
 def model_params(model: str, dim: int) -> dict:
     """Map the shared embedding size onto each model's own parameter names.
 
     Settings not listed here fall back to RecBole's per-model defaults
     (recbole/properties/model/<Model>.yaml).
     """
+    if model in CUSTOM_MODELS:
+        # Each custom model reads only the size keys it uses.
+        return {**load_custom_model(model)[1], "embedding_size": dim,
+                "hidden_size": dim, "inner_size": dim * 4}
     if model in ("SASRec", "BERT4Rec"):
         params = {"hidden_size": dim, "inner_size": dim * 4}
         if model == "SASRec":
@@ -85,7 +118,7 @@ def model_params(model: str, dim: int) -> dict:
 def build_config_dict(args: argparse.Namespace) -> dict:
     """Shared RecBole settings for every model and dataset."""
     use_gpu = torch.cuda.is_available()
-    return {
+    config = {
         # ---- Environment ------------------------------------------------- #
         "data_path": args.data_path,
         "checkpoint_dir": "./saved/",
@@ -111,9 +144,7 @@ def build_config_dict(args: argparse.Namespace) -> dict:
         "learning_rate": args.learning_rate,
         "stopping_step": args.stopping_step,
         "eval_step": 1,
-        # Cross-entropy over all items; RecBole requires negative sampling off for CE.
         "loss_type": "CE",
-        "train_neg_sample_args": None,
 
         # ---- Evaluation -------------------------------------------------- #
         "eval_args": {
@@ -130,13 +161,32 @@ def build_config_dict(args: argparse.Namespace) -> dict:
         # ---- Model ------------------------------------------------------- #
         **model_params(args.model, args.embedding_size),
     }
+    if args.loss_type:
+        config["loss_type"] = args.loss_type
+    # CE scores all items, so RecBole requires negative sampling off; BPR needs one negative.
+    config["train_neg_sample_args"] = BPR_NEG_SAMPLING if config["loss_type"] == "BPR" else None
+    if args.model == "Sig4Rec":
+        config["relation_file"] = relation_file(args)
+    return config
+
+
+def relation_file(args: argparse.Namespace) -> str:
+    """Item-attribute file shared by a dataset and all its noisy copies (same items)."""
+    base = parse_dataset_name(args.dataset)[0]
+    return os.path.join(args.data_path, base, f"{base}.genre")
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def ensure_dataset(args: argparse.Namespace) -> None:
-    """Make sure the .inter file exists before RecBole tries its (broken) download."""
+    """Make sure the .inter (and Sig4Rec's relation) file exists before RecBole tries its
+    (broken) download."""
+    if args.model == "Sig4Rec" and not os.path.exists(relation_file(args)):
+        if parse_dataset_name(args.dataset)[0] != "ml-1m":
+            raise SystemExit(f"{relation_file(args)} not found; Sig4Rec needs item relations.")
+        importlib.import_module("sig4rec").prepare_ml1m_genres(args.data_path)
+
     path = os.path.join(args.data_path, args.dataset, f"{args.dataset}.inter")
     if os.path.exists(path):
         return
@@ -146,6 +196,36 @@ def ensure_dataset(args: argparse.Namespace) -> None:
         return
     raise SystemExit(f"{path} not found. Create it first, e.g.\n"
                      f"  python inject_noise.py --type insertion --level 0.20")
+
+
+def run_custom(args: argparse.Namespace) -> dict:
+    """Same steps as RecBole's run_recbole, but for a model class defined in this project."""
+    model_class, _ = load_custom_model(args.model)
+    config = Config(model=model_class, dataset=args.dataset,
+                    config_dict=build_config_dict(args))
+    init_seed(config["seed"], config["reproducibility"])
+    init_logger(config)
+    logger = getLogger()
+    logger.info(config)
+
+    dataset = create_dataset(config)
+    logger.info(dataset)
+    train_data, valid_data, test_data = data_preparation(config, dataset)
+
+    init_seed(config["seed"] + config["local_rank"], config["reproducibility"])
+    model = model_class(config, train_data._dataset).to(config["device"])
+    logger.info(model)
+
+    trainer = Trainer(config, model)
+    best_valid_score, best_valid_result = trainer.fit(
+        train_data, valid_data, saved=True, show_progress=config["show_progress"])
+    test_result = trainer.evaluate(test_data, load_best_model=True,
+                                   show_progress=config["show_progress"])
+
+    logger.info(set_color("best valid ", "yellow") + f": {best_valid_result}")
+    logger.info(set_color("test result", "yellow") + f": {test_result}")
+    return {"best_valid_score": best_valid_score, "best_valid_result": best_valid_result,
+            "test_result": test_result}
 
 
 def print_test_results(model: str, dataset: str, test_result: dict) -> None:
@@ -183,8 +263,11 @@ def main() -> None:
     print(f"[device] CUDA available: {torch.cuda.is_available()} -> running on {device}", flush=True)
 
     ensure_dataset(args)
-    result = run_recbole(model=args.model, dataset=args.dataset,
-                         config_dict=build_config_dict(args), saved=True)
+    if args.model in CUSTOM_MODELS:
+        result = run_custom(args)
+    else:
+        result = run_recbole(model=args.model, dataset=args.dataset,
+                             config_dict=build_config_dict(args), saved=True)
 
     print_test_results(args.model, args.dataset, result["test_result"])
     print(f"  Best validation NDCG@10: {result['best_valid_score']:.4f}")
