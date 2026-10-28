@@ -2,9 +2,11 @@
 train_baseline.py
 =================
 
-Train and evaluate a baseline SASRec model on MovieLens-1M (``ml-1m``) with RecBole.
+Legacy SASRec-only trainer for MovieLens-1M. For new experiments prefer
+``train_model.py`` (all models, clean/noisy data, CSV logging). This file is
+still used as a helper to download/convert ml-1m (``prepare_ml1m``).
 
-This is the clean-data reference point for the project
+Original clean-data reference point for the project
 "Comparative Analysis and Benchmarking of Deep Sequential Recommender Systems
 Under Interaction Noise and Signal-Processing Noise Reduction Techniques".
 

@@ -8,7 +8,7 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 
-# ---- Datasets (regenerate with train_baseline.py / inject_noise.py) ----------
+# ---- Datasets (regenerate via train_model.py / inject_noise.py) --------------
 dataset/
 *.inter
 
@@ -19,9 +19,9 @@ saved/
 *.pth
 *.pt
 
-# ---- Experiment results (keep the folder, ignore generated files) -----------
-results/*.csv
-results/*.json
+# ---- Experiment results (keep folder via .gitkeep; ignore generated files) --
+results/*
+!results/.gitkeep
 
 # ---- System & editor files ---------------------------------------------------
 .DS_Store
