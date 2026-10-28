@@ -53,13 +53,18 @@ Usage
 import argparse
 import json
 import os
+import re
 from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 
 NOISE_TAGS = {"insertion": "ins", "deletion": "del"}
+TAG_TO_TYPE = {tag: name for name, tag in NOISE_TAGS.items()}
 STANDARD_LEVELS = [0.10, 0.20, 0.30]
+# Matches names produced by run(), e.g. ml-1m-ins20 or ml-1m-del10.
+_NOISY_NAME = re.compile(r"^(?P<source>.+)-(?P<tag>ins|del)(?P<pct>\d+)$")
 
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +272,65 @@ def run(noise_type: str, level: float, clean: pd.DataFrame, cols: dict, args) ->
           f"({meta['actual_rate_of_training_history']:.1%} of training history) | "
           f"avg seq len {before['avg_seq_len']} -> {after['avg_seq_len']} | "
           f"min seq len {after['min_seq_len']} | checks passed")
+
+
+# --------------------------------------------------------------------------- #
+# Programmatic API (used by train_model.py on Colab / first-run)
+# --------------------------------------------------------------------------- #
+def default_noise_args(source: str = "ml-1m", data_path: str = "./dataset/",
+                       seed: int = 2026) -> SimpleNamespace:
+    """Settings that match the CLI defaults for a single noise job."""
+    return SimpleNamespace(
+        source=source, data_path=data_path, seed=seed,
+        sampling="uniform", protect_last=2, min_train_len=3, k_core=5,
+        type=None, level=None, all=False,
+    )
+
+
+def ensure_noisy_dataset(dataset: str, data_path: str = "./dataset/",
+                         seed: int = 2026) -> str:
+    """Create ``dataset/<name>/<name>.inter`` on demand if it is missing.
+
+    Parses names like ``ml-1m-ins20`` / ``ml-1m-del10``, loads (or downloads)
+    the clean source, injects the matching noise, and returns the ``.inter``
+    path. Idempotent: an existing file is left untouched.
+    """
+    inter_path = os.path.join(data_path, dataset, f"{dataset}.inter")
+    if os.path.exists(inter_path):
+        return inter_path
+
+    match = _NOISY_NAME.match(dataset)
+    if not match:
+        raise FileNotFoundError(
+            f"{inter_path} not found and '{dataset}' is not a recognised "
+            f"noisy name (expected <source>-insNN or <source>-delNN)."
+        )
+
+    source = match["source"]
+    noise_type = TAG_TO_TYPE[match["tag"]]
+    level = int(match["pct"]) / 100.0
+    if not 0 < level < 1:
+        raise ValueError(f"Noise level parsed from '{dataset}' is out of range: {level}")
+
+    print(f"[inject_noise] '{dataset}' missing — generating from '{source}' "
+          f"({noise_type} @ {level:.0%}, seed={seed})", flush=True)
+
+    args = default_noise_args(source=source, data_path=data_path, seed=seed)
+    raw = load_inter(args.data_path, args.source)
+    cols = {
+        "uid": find_column(raw, "user_id"),
+        "iid": find_column(raw, "item_id"),
+        "ts": find_column(raw, "timestamp"),
+        "rating": next((c for c in raw.columns if c.split(":")[0] == "rating"), None),
+    }
+    clean = sort_sequences(k_core(raw, cols["uid"], cols["iid"], args.k_core),
+                           cols["uid"], cols["ts"])
+    print(f"[{args.source}] after {args.k_core}-core filtering: {describe(clean, cols)}")
+    run(noise_type, level, clean, cols, args)
+
+    if not os.path.exists(inter_path):
+        raise RuntimeError(f"Noise injection finished but {inter_path} was not created.")
+    return inter_path
 
 
 # --------------------------------------------------------------------------- #

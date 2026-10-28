@@ -1,26 +1,21 @@
 # ---------------------------------------------------------------------------
 # Sequential Recommender Noise-Robustness Benchmark - Python dependencies
-# Supported Python: 3.9 - 3.12 (3.10+ recommended)
-# Install with: pip install -r requirements.txt
+# Tuned for Google Colab (Python 3.13 + CUDA) and local GPU/CPU runs.
+# Prefer:  bash setup_environment.sh
+# Or:     pip install -r requirements.txt
 # ---------------------------------------------------------------------------
 
-# ---- Core deep learning & recommender framework ---------------------------
-# PyTorch stopped publishing Intel-Mac (x86_64) wheels after 2.2.x.
-torch>=2.1,<2.3 ; sys_platform == "darwin" and platform_machine == "x86_64"
-torch>=2.1,<2.8 ; sys_platform != "darwin" or platform_machine != "x86_64"
+torch>=2.1.0
 recbole==1.2.1
-# run_recbole imports Ray, whose older releases need pkg_resources (removed in setuptools 81).
-setuptools<81
-
-# ---- Signal processing & noise filtering ----------------------------------
-# RecBole 1.2.1 aliases np.float_ / np.unicode_ etc., which NumPy 2 removed.
-numpy>=1.23,<2
-scipy>=1.10,<1.15
-PyWavelets>=1.4,<1.9
-
-# ---- Data analysis & visualisation ----------------------------------------
-# RecBole relies on chained in-place DataFrame assignment, which breaks in pandas 3.
-pandas>=1.5,<3
-matplotlib>=3.7,<3.11
-seaborn>=0.12,<0.14
-tqdm>=4.65
+tensorboardX
+colorlog
+colorama
+thop
+texttable
+numpy>=1.23.0
+pandas>=1.5.0
+scipy
+pywavelets
+matplotlib
+seaborn
+tqdm

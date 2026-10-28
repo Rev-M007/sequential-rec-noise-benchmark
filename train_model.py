@@ -21,20 +21,93 @@ Usage
     python train_model.py --model FMLPRec --dataset ml-1m-ins30
     python train_model.py --model Sig4Rec --dataset ml-1m-del20   # BPR loss by default
 
-Noisy datasets (e.g. ``ml-1m-ins20``) must first be created with
-``python inject_noise.py``. Clean ``ml-1m`` is downloaded automatically.
+Noisy datasets (e.g. ``ml-1m-ins20``) are generated automatically via
+``inject_noise.ensure_noisy_dataset`` when missing. Clean ``ml-1m`` is
+downloaded automatically.
 """
 
-import argparse
-import importlib
+# =============================================================================
+# Compatibility patches — MUST run before RecBole / PyTorch / scientific imports
+# (Google Colab: Python 3.13 + NumPy 2.x + no Ray + TensorBoard/TF quirks)
+# =============================================================================
+import sys
+import types
+import ssl
 import os
-from logging import FileHandler, getLogger
+
+# A. Bypass SSL verification for online dataset downloads (GroupLens / Colab)
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# B. Patch NumPy 2.0 legacy type attributes removed in NumPy 2.x (RecBole 1.2.1)
+import numpy as np
+np.float_ = np.float64
+np.float = np.float64
+np.int_ = np.int64
+np.int = np.int64
+np.bool_ = bool
+np.complex_ = np.complex128
+np.complex = np.complex128
+np.unicode_ = str
+np.unicode = str
+
+# C. Mock Ray stubs to prevent ModuleNotFoundError when RecBole imports ray.tune
+#    (we install recbole with --no-deps to avoid Ray resolution crashes)
+ray = types.ModuleType("ray")
+tune = types.ModuleType("tune")
+ray.tune = tune
+sys.modules["ray"] = ray
+sys.modules["ray.tune"] = tune
+
+# D. Redirect PyTorch TensorBoard calls to tensorboardX to prevent TensorFlow
+#    C++ crashes on Python 3.13 / Colab
+try:
+    import tensorboardX
+    tb = types.ModuleType("torch.utils.tensorboard")
+    tb.SummaryWriter = tensorboardX.SummaryWriter
+    sys.modules["torch.utils.tensorboard"] = tb
+except ImportError:
+    pass
+
+# E. Patch pandas dtype_to_subclass for boolean indexers in RecBole filtering.
+#    Keep the unbound original (__func__) so non-bool dtypes (DatetimeIndex,
+#    CategoricalIndex, …) still resolve correctly on pandas 2.x / Colab.
+import pandas as pd
+_orig_dtype_subclass = pd.core.indexes.base.Index._dtype_to_subclass
+_orig_dtype_subclass_func = getattr(_orig_dtype_subclass, "__func__", _orig_dtype_subclass)
+
+
+@classmethod
+def _patched_dtype_subclass(cls, dtype):
+    if str(dtype) in ["bool", "bool8", "boolean"]:
+        return pd.core.indexes.base.Index
+    try:
+        return _orig_dtype_subclass_func(cls, dtype)
+    except Exception:
+        return pd.core.indexes.base.Index
+
+
+pd.core.indexes.base.Index._dtype_to_subclass = _patched_dtype_subclass
 
 # PyTorch >= 2.6 defaults torch.load(weights_only=True), which cannot unpickle the
 # config objects RecBole stores in its checkpoints, breaking best-model reloading.
 os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
+# =============================================================================
+# Normal imports (safe after the patches above)
+# =============================================================================
+import argparse
+import importlib
+from logging import FileHandler, getLogger
+
 import torch
+
+# Full CUDA hardware acceleration on Colab T4 / local GPUs
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 from recbole.config import Config
 from recbole.data import create_dataset, data_preparation
 from recbole.quick_start import run_recbole
@@ -73,7 +146,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=200, help="Maximum training epochs.")
     parser.add_argument("--MAX_ITEM_LIST_LENGTH", type=int, default=200,
                         help="Maximum history length fed to the model.")
-    parser.add_argument("--train_batch_size", type=int, default=256)
+    # 2048 maximises T4 CUDA utilisation (~15s/epoch vs ~450s at batch 256).
+    parser.add_argument("--train_batch_size", type=int, default=2048)
     parser.add_argument("--embedding_size", type=int, default=64,
                         help="Item embedding / hidden dimension, applied to every model.")
     parser.add_argument("--learning_rate", type=float, default=1e-3)
@@ -156,7 +230,8 @@ def build_config_dict(args: argparse.Namespace) -> dict:
         "metrics": METRICS,
         "topk": TOPK,
         "valid_metric": "NDCG@10",
-        "eval_batch_size": 2048,
+        # 4096 keeps full-ranking eval saturated on a T4 without OOM.
+        "eval_batch_size": 4096,
 
         # ---- Model ------------------------------------------------------- #
         **model_params(args.model, args.embedding_size),
@@ -180,8 +255,11 @@ def relation_file(args: argparse.Namespace) -> str:
 # Helpers
 # --------------------------------------------------------------------------- #
 def ensure_dataset(args: argparse.Namespace) -> None:
-    """Make sure the .inter (and Sig4Rec's relation) file exists before RecBole tries its
-    (broken) download."""
+    """Make sure the .inter (and Sig4Rec's relation) file exists before RecBole runs.
+
+    Clean ``ml-1m`` is downloaded on demand. Noisy names like ``ml-1m-ins20``
+    are generated automatically via ``inject_noise.ensure_noisy_dataset``.
+    """
     if args.model == "Sig4Rec" and not os.path.exists(relation_file(args)):
         if parse_dataset_name(args.dataset)[0] != "ml-1m":
             raise SystemExit(f"{relation_file(args)} not found; Sig4Rec needs item relations.")
@@ -194,8 +272,13 @@ def ensure_dataset(args: argparse.Namespace) -> None:
         from train_baseline import prepare_ml1m
         prepare_ml1m(args.data_path)
         return
-    raise SystemExit(f"{path} not found. Create it first, e.g.\n"
-                     f"  python inject_noise.py --type insertion --level 0.20")
+
+    # Auto-build noisy variants (ml-1m-ins10, ml-1m-del20, ...) for Colab one-shot runs.
+    try:
+        from inject_noise import ensure_noisy_dataset
+        ensure_noisy_dataset(args.dataset, data_path=args.data_path, seed=args.seed)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_custom(args: argparse.Namespace) -> dict:
@@ -261,6 +344,9 @@ def main() -> None:
     args = parse_args()
     device = torch.cuda.get_device_name(int(args.gpu_id)) if torch.cuda.is_available() else "CPU"
     print(f"[device] CUDA available: {torch.cuda.is_available()} -> running on {device}", flush=True)
+    print(f"[config] train_batch_size={args.train_batch_size}  "
+          f"eval_batch_size=4096  MAX_ITEM_LIST_LENGTH={args.MAX_ITEM_LIST_LENGTH}",
+          flush=True)
 
     ensure_dataset(args)
     if args.model in CUSTOM_MODELS:
