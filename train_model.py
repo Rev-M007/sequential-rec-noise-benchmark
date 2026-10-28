@@ -38,17 +38,24 @@ import os
 # A. Bypass SSL verification for online dataset downloads (GroupLens / Colab)
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# B. Patch NumPy 2.0 legacy type attributes removed in NumPy 2.x (RecBole 1.2.1)
+# B. Restore NumPy aliases removed in 2.x (RecBole 1.2.1 still references them).
+#    Only set names that are missing. Never overwrite np.bool_ / other live dtypes
+#    with Python builtins — that turns bool masks into object arrays and breaks
+#    pandas row filtering on Colab (KeyError on Index([True, True, ...])).
 import numpy as np
-np.float_ = np.float64
-np.float = np.float64
-np.int_ = np.int64
-np.int = np.int64
-np.bool_ = bool
-np.complex_ = np.complex128
-np.complex = np.complex128
-np.unicode_ = str
-np.unicode = str
+for _name, _alias in (
+    ("float_", np.float64),
+    ("float", np.float64),
+    ("int_", np.int64),
+    ("int", np.int64),
+    ("complex_", np.complex128),
+    ("complex", np.complex128),
+    ("unicode_", str),
+    ("unicode", str),
+    ("bool", bool),  # np.bool was removed; np.bool_ must remain the dtype
+):
+    if not hasattr(np, _name):
+        setattr(np, _name, _alias)
 
 # C. Mock Ray stubs to prevent ModuleNotFoundError when RecBole imports ray.tune
 #    (we install recbole with --no-deps to avoid Ray resolution crashes)

@@ -96,17 +96,16 @@ def load_inter(data_path: str, source: str) -> pd.DataFrame:
 def k_core(df: pd.DataFrame, uid: str, iid: str, k: int) -> pd.DataFrame:
     """Iteratively keep users and items with >= k interactions (mirrors RecBole).
 
-    Uses a NumPy bool mask (not a pandas Boolean Index) so ``df.loc[keep]`` stays
-    row-filtering on pandas 2.x / Colab. Plain ``df[keep]`` can raise KeyError
-    when the mask is treated as column labels.
+    Filters with ``iloc`` + integer positions so pandas 2.x never mistakes a bool
+    mask for index/column labels (a common Colab KeyError).
     """
     while True:
-        user_ok = df[uid].map(df[uid].value_counts()) >= k
-        item_ok = df[iid].map(df[iid].value_counts()) >= k
-        keep = (user_ok & item_ok).to_numpy()
+        user_ok = np.asarray(df[uid].map(df[uid].value_counts()) >= k, dtype=bool)
+        item_ok = np.asarray(df[iid].map(df[iid].value_counts()) >= k, dtype=bool)
+        keep = user_ok & item_ok
         if keep.all():
             return df.reset_index(drop=True)
-        df = df.loc[keep].reset_index(drop=True)
+        df = df.iloc[np.flatnonzero(keep)].reset_index(drop=True)
 
 
 def sort_sequences(df: pd.DataFrame, uid: str, ts: str) -> pd.DataFrame:
