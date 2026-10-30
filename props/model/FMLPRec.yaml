@@ -1,0 +1,11 @@
+# FMLPRec hyperparameters (Zhou et al., WWW 2022)
+# Loaded via Config(config_file_list=[...]) — same idea as recbole/properties/model/*.yaml
+
+n_layers: 2                     # (int) Number of filter-enhanced MLP blocks.
+hidden_size: 64                 # (int) Item / hidden embedding size.
+inner_size: 256                 # (int) Feed-forward inner size (usually 4 * hidden_size).
+hidden_dropout_prob: 0.5        # (float) Dropout in filter and feed-forward layers.
+hidden_act: 'gelu'              # (str) Activation in the feed-forward network.
+layer_norm_eps: 1e-12           # (float) Epsilon for LayerNorm.
+initializer_range: 0.02         # (float) Std of normal weight init.
+loss_type: 'CE'                 # (str) 'CE' (full softmax) or 'BPR'.

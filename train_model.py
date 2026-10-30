@@ -126,12 +126,13 @@ from log_results import DEFAULT_CSV, log_result, parse_dataset_name, parse_recbo
 METRICS = ["NDCG", "Recall", "Hit"]
 TOPK = [10, 20]
 
-# Models implemented in this project: (module, class name, defaults dict name).
+# Custom models: RecBole-style split between code (models/) and YAML (props/model/).
 # run_recbole only knows RecBole's built-in models, so these use run_custom().
-# Modules are imported only when their model is requested (load_custom_model).
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROPS_MODEL_DIR = os.path.join(_REPO_ROOT, "props", "model")
 CUSTOM_MODELS = {
-    "FMLPRec": ("fmlp_rec", "FMLPRec", "FMLPREC_DEFAULTS"),
-    "Sig4Rec": ("sig4rec", "Sig4Rec", "SIG4REC_DEFAULTS"),
+    "FMLPRec": ("models.fmlp_rec", "FMLPRec"),
+    "Sig4Rec": ("models.sig4rec", "Sig4Rec"),
 }
 # One negative item per positive, as required by the BPR loss.
 BPR_NEG_SAMPLING = {"distribution": "uniform", "sample_num": 1, "alpha": 1.0,
@@ -168,23 +169,37 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_custom_model(name: str) -> tuple:
-    """Import a project model's module and return (model class, default hyperparameters)."""
-    module_name, class_name, defaults_name = CUSTOM_MODELS[name]
+def model_yaml_path(name: str) -> str:
+    """Path to this project's RecBole-style model YAML (``props/model/<Name>.yaml``)."""
+    return os.path.join(PROPS_MODEL_DIR, f"{name}.yaml")
+
+
+def load_model_yaml(name: str) -> dict:
+    """Read ``props/model/<Name>.yaml`` (hyperparameters only; code stays in ``models/``)."""
+    import yaml
+    path = model_yaml_path(name)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Missing model YAML: {path}")
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_custom_model(name: str):
+    """Import a project model class from ``models/`` (lazy import)."""
+    module_name, class_name = CUSTOM_MODELS[name]
     module = importlib.import_module(module_name)
-    return getattr(module, class_name), getattr(module, defaults_name)
+    return getattr(module, class_name)
 
 
 def model_params(model: str, dim: int) -> dict:
     """Map the shared embedding size onto each model's own parameter names.
 
-    Settings not listed here fall back to RecBole's per-model defaults
-    (recbole/properties/model/<Model>.yaml).
+    Custom-model architecture defaults come from ``props/model/<Model>.yaml``.
+    Built-in models use RecBole's ``properties/model/<Model>.yaml``.
     """
     if model in CUSTOM_MODELS:
-        # Each custom model reads only the size keys it uses.
-        return {**load_custom_model(model)[1], "embedding_size": dim,
-                "hidden_size": dim, "inner_size": dim * 4}
+        # Size only — other hyperparams stay in the YAML file.
+        return {"embedding_size": dim, "hidden_size": dim, "inner_size": dim * 4}
     if model in ("SASRec", "BERT4Rec"):
         params = {"hidden_size": dim, "inner_size": dim * 4}
         if model == "SASRec":
@@ -197,8 +212,17 @@ def model_params(model: str, dim: int) -> dict:
 
 
 def build_config_dict(args: argparse.Namespace) -> dict:
-    """Shared RecBole settings for every model and dataset."""
+    """Shared RecBole settings for every model and dataset.
+
+    Model-specific hyperparams for FMLPRec / Sig4Rec are NOT duplicated here;
+    they are loaded from ``props/model/*.yaml`` via ``config_file_list``.
+    """
     use_gpu = torch.cuda.is_available()
+    if args.model in CUSTOM_MODELS:
+        loss_type = args.loss_type or load_model_yaml(args.model).get("loss_type", "CE")
+    else:
+        loss_type = args.loss_type or "CE"
+
     config = {
         # ---- Environment ------------------------------------------------- #
         "data_path": args.data_path,
@@ -225,7 +249,7 @@ def build_config_dict(args: argparse.Namespace) -> dict:
         "learning_rate": args.learning_rate,
         "stopping_step": args.stopping_step,
         "eval_step": 1,
-        "loss_type": "CE",
+        "loss_type": loss_type,
 
         # ---- Evaluation -------------------------------------------------- #
         "eval_args": {
@@ -240,11 +264,9 @@ def build_config_dict(args: argparse.Namespace) -> dict:
         # 4096 keeps full-ranking eval saturated on a T4 without OOM.
         "eval_batch_size": 4096,
 
-        # ---- Model ------------------------------------------------------- #
+        # ---- Model size (YAML supplies the rest for custom models) ------ #
         **model_params(args.model, args.embedding_size),
     }
-    if args.loss_type:
-        config["loss_type"] = args.loss_type
     # CE scores all items, so RecBole requires negative sampling off; BPR needs one negative.
     config["train_neg_sample_args"] = BPR_NEG_SAMPLING if config["loss_type"] == "BPR" else None
     if args.model == "Sig4Rec":
@@ -270,7 +292,7 @@ def ensure_dataset(args: argparse.Namespace) -> None:
     if args.model == "Sig4Rec" and not os.path.exists(relation_file(args)):
         if parse_dataset_name(args.dataset)[0] != "ml-1m":
             raise SystemExit(f"{relation_file(args)} not found; Sig4Rec needs item relations.")
-        importlib.import_module("sig4rec").prepare_ml1m_genres(args.data_path)
+        importlib.import_module("models.sig4rec").prepare_ml1m_genres(args.data_path)
 
     path = os.path.join(args.data_path, args.dataset, f"{args.dataset}.inter")
     if os.path.exists(path):
@@ -289,10 +311,18 @@ def ensure_dataset(args: argparse.Namespace) -> None:
 
 
 def run_custom(args: argparse.Namespace) -> dict:
-    """Same steps as RecBole's run_recbole, but for a model class defined in this project."""
-    model_class, _ = load_custom_model(args.model)
-    config = Config(model=model_class, dataset=args.dataset,
-                    config_dict=build_config_dict(args))
+    """Same steps as RecBole's run_recbole, but for a model class defined in this project.
+
+    Hyperparameters come from ``props/model/<Model>.yaml`` (like RecBole's
+    ``properties/model/``), then shared benchmark settings in ``config_dict``.
+    """
+    model_class = load_custom_model(args.model)
+    config = Config(
+        model=model_class,
+        dataset=args.dataset,
+        config_file_list=[model_yaml_path(args.model)],
+        config_dict=build_config_dict(args),
+    )
     init_seed(config["seed"], config["reproducibility"])
     init_logger(config)
     logger = getLogger()

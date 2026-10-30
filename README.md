@@ -5,16 +5,18 @@ Comparative analysis of deep sequential recommenders under interaction noise
 
 ## Main files
 
-| File | Role |
+| File / folder | Role |
 |------|------|
 | `train_model.py` | **Use this** — train any model on clean or noisy data |
 | `inject_noise.py` | Build noisy datasets (also called automatically by `train_model.py`) |
-| `fmlp_rec.py` | FMLPRec model |
-| `sig4rec.py` | Sig4Rec model |
+| `models/` | Custom model **code** (`fmlp_rec.py`, `sig4rec.py`) — like RecBole’s `model/` |
+| `props/model/` | Custom model **YAML** (`FMLPRec.yaml`, `Sig4Rec.yaml`) — like RecBole’s `properties/model/` |
 | `log_results.py` | Append / summarise runs in `results/results.csv` |
 | `setup_environment.sh` | Install dependencies (local or Colab) |
 | `requirements.txt` | Python packages |
 | `train_baseline.py` | Older SASRec-only script (kept for ml-1m download helper). Prefer `train_model.py`. |
+
+Custom models follow RecBole’s split: network in `.py`, hyperparameters in `.yaml`.
 
 ## Setup
 

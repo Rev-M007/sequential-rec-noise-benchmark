@@ -1,0 +1,14 @@
+# Sig4Rec hyperparameters (He et al., IEEE TCSS 2026)
+# Loaded via Config(config_file_list=[...]) — same idea as recbole/properties/model/*.yaml
+
+embedding_size: 64              # (int) Item / user embedding size d.
+n_freq: 64                      # (int) Ns, number of frequency components.
+time_scalar: 60.0               # (float) Eq. 1: seconds -> minutes.
+time_bias: 1e-6                 # (float) Eq. 1 numerical bias.
+relation_mode: 'related'        # (str) 'related' or 'neighbor'.
+alpha: 0.6                      # (float) Weight of relation loss (Eq. 14); paper best for ml-1m.
+margin: 1.0                     # (float) Margin γ in TransE hinge loss (Eq. 13).
+rel_batch_size: 1024            # (int) Relation triples sampled per training step.
+init_std: 0.01                  # (float) Gaussian init std (Sec. V-A4).
+loss_type: 'BPR'                # (str) 'BPR' (paper) or 'CE'.
+relation_file: ~                # (str or null) Item-attribute file; set by train_model.py for ml-1m.

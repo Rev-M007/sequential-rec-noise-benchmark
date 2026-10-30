@@ -27,15 +27,12 @@ Differences from the authors' code
   ``forward`` converts to left padding so the most recent item always sits at
   the last position, exactly as in the original model.
 
+Hyperparameters live in ``props/model/FMLPRec.yaml`` (RecBole-style), loaded by
+``train_model.py`` through ``Config(config_file_list=...)``.
+
 Usage
 -----
     python train_model.py --model FMLPRec --dataset ml-1m
-
-or directly with RecBole's lower-level API:
-
-    from recbole.config import Config
-    from fmlp_rec import FMLPRec, FMLPREC_DEFAULTS
-    config = Config(model=FMLPRec, dataset="ml-1m", config_dict={**FMLPREC_DEFAULTS, ...})
 """
 
 import torch
@@ -44,9 +41,9 @@ import torch.nn.functional as F
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
 
-# Hyperparameters of the original implementation. RecBole returns None for keys
-# it has no YAML defaults for (custom models), so these are used as fallbacks.
-FMLPREC_DEFAULTS = {
+# Tiny fallbacks only if a key is missing from YAML / Config (should not happen
+# when props/model/FMLPRec.yaml is loaded).
+_FALLBACKS = {
     "n_layers": 2,
     "hidden_size": 64,
     "inner_size": 256,
@@ -131,7 +128,7 @@ class FMLPRec(SequentialRecommender):
 
         def param(key):
             value = config[key]
-            return FMLPREC_DEFAULTS[key] if value is None else value
+            return _FALLBACKS[key] if value is None else value
 
         self.n_layers = param("n_layers")
         self.hidden_size = param("hidden_size")

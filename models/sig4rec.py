@@ -49,6 +49,9 @@ Implementation choices where the paper is not explicit
 * RecBole stores timestamps as float32 (~64 s resolution at Unix-time scale),
   which only affects intervals of a few minutes after the log transform.
 
+Hyperparameters live in ``props/model/Sig4Rec.yaml`` (RecBole-style), loaded by
+``train_model.py`` through ``Config(config_file_list=...)``.
+
 Usage
 -----
     python train_model.py --model Sig4Rec --dataset ml-1m
@@ -64,18 +67,20 @@ import torch.nn as nn
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
 
-SIG4REC_DEFAULTS = {
+# Tiny fallbacks only if a key is missing from YAML / Config (should not happen
+# when props/model/Sig4Rec.yaml is loaded).
+_FALLBACKS = {
     "embedding_size": 64,
-    "n_freq": 64,              # Ns, number of frequency components
-    "time_scalar": 60.0,       # Eq. 1: seconds -> minutes
-    "time_bias": 1e-6,         # Eq. 1
+    "n_freq": 64,
+    "time_scalar": 60.0,
+    "time_bias": 1e-6,
     "relation_mode": "related",
-    "alpha": 0.6,              # Eq. 14, paper's best value for ml-1m
-    "margin": 1.0,             # γ in Eq. 13
-    "rel_batch_size": 1024,    # relation triples sampled per training step
-    "init_std": 0.01,          # "Gaussian with mean 0 and std 0.01" (Sec. V-A4)
+    "alpha": 0.6,
+    "margin": 1.0,
+    "rel_batch_size": 1024,
+    "init_std": 0.01,
     "loss_type": "BPR",
-    "relation_file": None,     # item -> attribute file, e.g. dataset/ml-1m/ml-1m.genre
+    "relation_file": None,
 }
 
 RELATIONS = ["shared_attribute", "sequential"]
@@ -143,7 +148,7 @@ class Sig4Rec(SequentialRecommender):
 
         def param(key):
             value = config[key]
-            return SIG4REC_DEFAULTS[key] if value is None else value
+            return _FALLBACKS[key] if value is None else value
 
         self.embedding_size = param("embedding_size")
         self.n_freq = param("n_freq")
