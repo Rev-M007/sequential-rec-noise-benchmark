@@ -18,25 +18,53 @@ Comparative analysis of deep sequential recommenders under interaction noise
 
 Custom models follow RecBole’s split: network in `.py`, hyperparameters in `.yaml`.
 
-## Setup
+## Setup (local GPU machine)
 
 ```bash
+git clone https://github.com/Rev-M007/sequential-rec-noise-benchmark.git
+cd sequential-rec-noise-benchmark
+
 chmod +x setup_environment.sh
 ./setup_environment.sh
-source .venv/bin/activate   # local machine only; skip on Colab
+source .venv/bin/activate
 ```
 
 Or: `pip install -r requirements.txt`  
 (RecBole is installed with `--no-deps` in the setup script to avoid Ray issues.)
 
+Check GPU:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
 ## Run on a local GPU
+
+Default batch size is **1024**. Use `--gpu_id 0` (or `1`, `2`, … if you have more GPUs).
 
 ```bash
 # Clean MovieLens-1M (downloads on first run)
 python train_model.py --model SASRec --dataset ml-1m --gpu_id 0
 
+# Same with an explicit batch size
+python train_model.py --model SASRec --dataset ml-1m --gpu_id 0 --train_batch_size 1024
+
+# Larger batch (if GPU memory allows)
+python train_model.py --model SASRec --dataset ml-1m --gpu_id 0 --train_batch_size 2048
+
 # Noisy data (created automatically if missing)
 python train_model.py --model SASRec --dataset ml-1m-ins20 --gpu_id 0
+python train_model.py --model SASRec --dataset ml-1m-del10 --gpu_id 0
+```
+
+### All models (clean ml-1m)
+
+```bash
+python train_model.py --model SASRec   --dataset ml-1m --gpu_id 0 --train_batch_size 1024
+python train_model.py --model GRU4Rec  --dataset ml-1m --gpu_id 0 --train_batch_size 1024
+python train_model.py --model BERT4Rec --dataset ml-1m --gpu_id 0 --train_batch_size 1024
+python train_model.py --model FMLPRec  --dataset ml-1m --gpu_id 0 --train_batch_size 1024
+python train_model.py --model Sig4Rec  --dataset ml-1m --gpu_id 0 --train_batch_size 1024
 ```
 
 **Models:** `SASRec`, `GRU4Rec`, `BERT4Rec`, `FMLPRec`, `Sig4Rec`
@@ -54,7 +82,7 @@ python inject_noise.py --all
 
 - Sequence length: **200**
 - Embedding size: **64**
-- Train batch size: **2048**
+- Train batch size: **1024**
 - Metrics: **NDCG@10**, **Recall@10**, **Hit@10** (also @20)
 - Max epochs: 200 (early stopping on validation NDCG@10)
 

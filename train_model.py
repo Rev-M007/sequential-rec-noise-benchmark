@@ -154,8 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=200, help="Maximum training epochs.")
     parser.add_argument("--MAX_ITEM_LIST_LENGTH", type=int, default=200,
                         help="Maximum history length fed to the model.")
-    # 2048 maximises T4 CUDA utilisation (~15s/epoch vs ~450s at batch 256).
-    parser.add_argument("--train_batch_size", type=int, default=2048)
+    parser.add_argument("--train_batch_size", type=int, default=1024)
     parser.add_argument("--embedding_size", type=int, default=64,
                         help="Item embedding / hidden dimension, applied to every model.")
     parser.add_argument("--learning_rate", type=float, default=1e-3)
